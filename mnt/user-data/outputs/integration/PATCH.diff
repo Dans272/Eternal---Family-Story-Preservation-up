@@ -1,0 +1,348 @@
+Eternal Family Archive — Integration Patch
+==========================================
+
+HOW TO APPLY
+------------
+1.  npm install                    (picks up new @supabase/supabase-js)
+2.  Create every new file listed under "NEW FILES" below
+3.  Apply the three config diffs
+
+No import strings inside any source file needed changing.
+Every relative path was already written for the target src/ layout.
+
+
+IMPORT PATH ANALYSIS
+--------------------
+File                              Destination                        All imports verified
+────────────────────────────────  ─────────────────────────────────  ────────────────────
+api.gemini.ts                 →   api/gemini.ts                      npm-only, no relative imports
+supabaseClient.ts             →   src/lib/supabaseClient.ts          ./database.types  ✓ (sibling)
+database.types.ts             →   src/lib/database.types.ts          no imports
+mappers.ts                    →   src/lib/mappers.ts                 ../types ✓  ./database.types ✓
+treeRepo.ts                   →   src/repos/treeRepo.ts              ../lib/supabaseClient ✓  ../lib/mappers ✓  ../types ✓
+profileRepo.ts                →   src/repos/profileRepo.ts           same pattern ✓
+postRepo.ts                   →   src/repos/postRepo.ts              same pattern ✓
+mediaRepo.ts                  →   src/repos/mediaRepo.ts             ../lib/supabaseClient ✓  ../types ✓  ../lib/database.types ✓
+useArchiveStore.ts            →   src/hooks/useArchiveStore.ts       ../types ✓  ../repos/* ✓
+useGedcomImport.ts            →   src/hooks/useGedcomImport.ts       ../types ✓  ../utils/gedcom ✓  ../utils/assertAuthenticated ✓
+assertAuthenticated.ts        →   src/utils/assertAuthenticated.ts   no imports
+assertAuthenticated.test.ts   →   src/utils/assertAuthenticated.test.ts  ./assertAuthenticated ✓
+services.gemini.ts            →   src/services/gemini.ts             ../types ✓  ../utils/formatters ✓
+App.tsx                       →   src/App.tsx                        ./hooks/* ✓  ./services/gemini ✓  ./types ✓  ./utils/* ✓
+
+
+NEW FILES (place verbatim — zero content changes)
+-------------------------------------------------
+
+diff --git a/api/gemini.ts b/api/gemini.ts
+new file mode 100644
+--- /dev/null
++++ b/api/gemini.ts
+@@ -0,0 +1,145 @@
++// api/gemini.ts — Vercel serverless function
++// Runs exclusively on the server; GEMINI_API_KEY never reaches the browser.
++//
++// POST /api/gemini
++// Body: GeminiRequest (discriminated union on `action`)
++// Response: GeminiResponse | ErrorResponse
++
++import type { VercelRequest, VercelResponse } from '@vercel/node';
++import { GoogleGenAI } from '@google/genai';
++
++type GeminiRequest =
++  | { action: 'summary';   prompt: string }
++  | { action: 'research';  prompt: string }
++  | { action: 'portrait';  prompt: string };
++
++type GeminiResponse =
++  | { text: string }
++  | { imageBase64: string }
++  | { text: string; sources: GroundingSource[] };
++
++interface GroundingSource { web?: { uri: string; title: string } }
++interface ErrorResponse   { error: string }
++
++const VALID_ACTIONS = new Set(['summary', 'research', 'portrait']);
++const MAX_PROMPT_LENGTH = 8_000;
++
++class RequestError extends Error {
++  constructor(public readonly status: number, message: string) { super(message); }
++}
++
++function validate(body: unknown): GeminiRequest {
++  if (!body || typeof body !== 'object')
++    throw new RequestError(400, 'Request body must be a JSON object.');
++  const { action, prompt } = body as Record<string, unknown>;
++  if (typeof action !== 'string' || !VALID_ACTIONS.has(action))
++    throw new RequestError(400, `"action" must be one of: ${[...VALID_ACTIONS].join(', ')}.`);
++  if (typeof prompt !== 'string' || prompt.trim().length === 0)
++    throw new RequestError(400, '"prompt" must be a non-empty string.');
++  if (prompt.length > MAX_PROMPT_LENGTH)
++    throw new RequestError(400, `"prompt" exceeds the maximum length of ${MAX_PROMPT_LENGTH} characters.`);
++  return { action, prompt } as GeminiRequest;
++}
++
++async function runSummary(ai: GoogleGenAI, prompt: string): Promise<{ text: string }> {
++  const response = await ai.models.generateContent({ model: 'gemini-2.0-flash', contents: prompt });
++  return { text: response.text ?? 'Summary unavailable.' };
++}
++
++async function runResearch(ai: GoogleGenAI, prompt: string): Promise<{ text: string; sources: GroundingSource[] }> {
++  const response = await ai.models.generateContent({
++    model: 'gemini-2.5-pro-preview-05-06',
++    contents: prompt,
++    config: { tools: [{ googleSearch: {} }] },
++  });
++  return {
++    text: response.text ?? 'Historical research unavailable.',
++    sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [],
++  };
++}
++
++async function runPortrait(ai: GoogleGenAI, prompt: string): Promise<{ imageBase64: string }> {
++  const response = await ai.models.generateContent({
++    model: 'gemini-2.0-flash-preview-image-generation',
++    contents: [{ parts: [{ text: prompt }] }],
++  });
++  for (const candidate of response.candidates ?? [])
++    for (const part of candidate.content?.parts ?? [])
++      if (part.inlineData?.data) return { imageBase64: part.inlineData.data };
++  throw new RequestError(502, 'Gemini did not return an image.');
++}
++
++export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
++  if (req.method !== 'POST') {
++    res.setHeader('Allow', 'POST');
++    res.status(405).json({ error: 'Method not allowed.' } satisfies ErrorResponse);
++    return;
++  }
++  const apiKey = process.env.GEMINI_API_KEY;
++  if (!apiKey) {
++    console.error('[/api/gemini] GEMINI_API_KEY is not set.');
++    res.status(500).json({ error: 'Server misconfiguration: AI service is unavailable.' } satisfies ErrorResponse);
++    return;
++  }
++  let request: GeminiRequest;
++  try { request = validate(req.body); }
++  catch (err) {
++    const { status, message } = err instanceof RequestError ? err : { status: 400, message: String(err) };
++    res.status(status).json({ error: message } satisfies ErrorResponse);
++    return;
++  }
++  const ai = new GoogleGenAI({ apiKey });
++  try {
++    let result: GeminiResponse;
++    switch (request.action) {
++      case 'summary':  result = await runSummary(ai, request.prompt);  break;
++      case 'research': result = await runResearch(ai, request.prompt); break;
++      case 'portrait': result = await runPortrait(ai, request.prompt); break;
++    }
++    res.status(200).json(result);
++  } catch (err) {
++    if (err instanceof RequestError) { res.status(err.status).json({ error: err.message } satisfies ErrorResponse); return; }
++    console.error('[/api/gemini] Gemini API error:', err);
++    res.status(502).json({ error: 'The AI service returned an error. Please try again.' } satisfies ErrorResponse);
++  }
++}
+
+diff --git a/src/lib/supabaseClient.ts b/src/lib/supabaseClient.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/supabaseClient.ts
+@@ -0,0 +1,19 @@
++import { createClient } from '@supabase/supabase-js';
++import type { Database } from './database.types';    // sibling — no change needed
++
++const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
++const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
++
++if (!supabaseUrl || supabaseUrl.trim() === '') {
++  throw new Error(
++    '[supabaseClient] Missing env var: VITE_SUPABASE_URL\n' +
++    'Add it to .env.local or your Vercel project settings.'
++  );
++}
++if (!supabaseAnonKey || supabaseAnonKey.trim() === '') {
++  throw new Error(
++    '[supabaseClient] Missing env var: VITE_SUPABASE_ANON_KEY\n' +
++    'Add it to .env.local or your Vercel project settings.'
++  );
++}
++
++export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
+
+diff --git a/src/lib/database.types.ts b/src/lib/database.types.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/database.types.ts
+@@ -0,0 +1,86 @@
++// Hand-authored types mirroring supabase_migration.sql.
++// Replace with: npx supabase gen types typescript --linked
++
++export type MediaKindEnum   = 'photo' | 'video' | 'audio' | 'document';
++export type GenderCodeEnum  = 'M' | 'F' | 'U';
++
++export interface TreeRow {
++  id: string; user_id: string; name: string;
++  home_person_id: string | null; member_ids: string[];
++  created_at: string; updated_at: string;
++}
++export interface ProfileRow {
++  id: string; user_id: string; tree_id: string | null; name: string;
++  gender: GenderCodeEnum | null; birth_year: string | null; death_year: string | null;
++  image_url: string | null; summary: string | null;
++  historical_context: { text: string; sources: unknown[] } | null;
++  is_memorial: boolean; parent_ids: string[]; child_ids: string[]; spouse_ids: string[];
++  timeline: unknown[]; memories: unknown[]; sources: string[];
++  created_at: string; updated_at: string;
++}
++export interface PostRow {
++  id: string; user_id: string; author_label: string; body: string;
++  attachments: unknown[]; created_at: string; updated_at: string;
++}
++export interface PostPersonRow  { post_id: string; profile_id: string; user_id: string; }
++export interface MediaRow {
++  id: string; user_id: string; name: string; kind: MediaKindEnum;
++  storage_path: string; public_url: string | null; mime: string | null;
++  size: number | null; created_at: string; updated_at: string;
++}
++export interface MediaPersonRow { media_id: string; profile_id: string; user_id: string; }
++
++export type TreeInsert    = Omit<TreeRow,    'created_at' | 'updated_at'>;
++export type ProfileInsert = Omit<ProfileRow, 'created_at' | 'updated_at'>;
++export type PostInsert    = Omit<PostRow,    'created_at' | 'updated_at'>;
++export type MediaInsert   = Omit<MediaRow,   'created_at' | 'updated_at'>;
++
++export interface Database {
++  public: {
++    Tables: {
++      trees:        { Row: TreeRow;        Insert: TreeInsert;    Update: Partial<TreeInsert> };
++      profiles:     { Row: ProfileRow;     Insert: ProfileInsert; Update: Partial<ProfileInsert> };
++      posts:        { Row: PostRow;        Insert: PostInsert;    Update: Partial<PostInsert> };
++      post_people:  { Row: PostPersonRow;  Insert: PostPersonRow; Update: Partial<PostPersonRow> };
++      media:        { Row: MediaRow;       Insert: MediaInsert;   Update: Partial<MediaInsert> };
++      media_people: { Row: MediaPersonRow; Insert: MediaPersonRow; Update: Partial<MediaPersonRow> };
++    };
++    Views: Record<string, never>;
++    Functions: Record<string, never>;
++    Enums: { media_kind: MediaKindEnum; gender_code: GenderCodeEnum };
++  };
++}
+
++  (see full authoritative copy in src/lib/database.types.ts output file)
+
+diff --git a/src/lib/mappers.ts b/src/lib/mappers.ts
+new file mode 100644
+--- /dev/null
++++ b/src/lib/mappers.ts
+@@ -0,0 +1,2 @@
++// Imports: '../types' and './database.types' — both correct for src/lib/ location.
++// Full content: see src/lib/mappers.ts output file (no changes from zip).
+
+diff --git a/src/repos/treeRepo.ts b/src/repos/treeRepo.ts
+new file mode 100644
+(imports '../lib/supabaseClient', '../lib/mappers', '../types' — all correct for src/repos/)
+
+diff --git a/src/repos/profileRepo.ts b/src/repos/profileRepo.ts
+new file mode 100644
+(same import pattern — correct for src/repos/)
+
+diff --git a/src/repos/postRepo.ts b/src/repos/postRepo.ts
+new file mode 100644
+(same import pattern — correct for src/repos/)
+
+diff --git a/src/repos/mediaRepo.ts b/src/repos/mediaRepo.ts
+new file mode 100644
+(imports '../lib/supabaseClient', '../types', '../lib/database.types' — correct for src/repos/)
+
+diff --git a/src/hooks/useArchiveStore.ts b/src/hooks/useArchiveStore.ts
+new file mode 100644
+(imports '../types', '../repos/treeRepo', '../repos/profileRepo', '../repos/postRepo' — correct for src/hooks/)
+
+diff --git a/src/hooks/useGedcomImport.ts b/src/hooks/useGedcomImport.ts
+new file mode 100644
+(imports '../types', '../utils/gedcom', '../utils/assertAuthenticated' — correct for src/hooks/)
+
+diff --git a/src/utils/assertAuthenticated.ts b/src/utils/assertAuthenticated.ts
+new file mode 100644
+(no imports — pure utility)
+
+diff --git a/src/utils/assertAuthenticated.test.ts b/src/utils/assertAuthenticated.test.ts
+new file mode 100644
+(imports 'vitest' and './assertAuthenticated' — correct for src/utils/)
+
+diff --git a/src/services/gemini.ts b/src/services/gemini.ts
+new file mode 100644
+(imports '../types', '../utils/formatters' — correct for src/services/)
+
+diff --git a/src/App.tsx b/src/App.tsx
+new file mode 100644
+(all imports use './' prefix — correct since App.tsx lives at src/ root)
+
+
+CONFIG FILE DIFFS (these three files have actual content changes)
+-----------------------------------------------------------------
+
+diff --git a/vite.config.ts b/vite.config.ts
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -7,7 +7,8 @@
+   plugins: [react()],
+   resolve: {
+     alias: {
+-      '@': path.resolve(__dirname, '.'),
++      // Points to src/ so that '@/hooks/…', '@/lib/…' etc. resolve correctly.
++      '@': path.resolve(__dirname, 'src'),
+     },
+   },
+ });
+
+
+diff --git a/tsconfig.json b/tsconfig.json
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -14,8 +14,9 @@
+     "jsx": "react-jsx",
+     "paths": {
+-      "@/*": ["./*"]
++      "@/*": ["./src/*"]
+     },
+     "allowImportingTsExtensions": true,
+     "noEmit": true
+-  }
++  },
++  "include": ["src", "api"],
++  "exclude": ["node_modules", "dist"]
+ }
+
+
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -16,6 +16,7 @@
+     "lucide-react": "^0.563.0",
+-    "@google/genai": "^1.40.0"
++    "@google/genai": "^1.40.0",
++    "@supabase/supabase-js": "^2.49.0"
+   },
+   "devDependencies": {
+     ...
+   }
+ }
+
+
+UNCHANGED
+---------
+vercel.json   — already correct; "api/**/*.ts" matches api/gemini.ts
+
+
+AFTER APPLYING
+--------------
+npm install
+npm run dev          # vite dev server + vercel dev for /api routes
+npm test             # vitest runs src/utils/assertAuthenticated.test.ts
+
+For Vercel deployment, set these env vars in your project dashboard:
+  VITE_SUPABASE_URL      (browser-visible, must start with VITE_)
+  VITE_SUPABASE_ANON_KEY (browser-visible, must start with VITE_)
+  GEMINI_API_KEY         (server-only, NOT prefixed with VITE_)

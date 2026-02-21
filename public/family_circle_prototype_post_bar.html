@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Family Circle Prototype</title>
+</head>
+<body>
+<script>
+(function () {
+  "use strict";
+
+  // Simple, self contained prototype for Family Circles
+  // Data persists in localStorage under key familyCirclePrototypeV1
+
+  const storageKey = "familyCirclePrototypeV1";
+
+  function nowIso() { return new Date().toISOString(); }
+
+  function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
+  function safeId(prefix) {
+    const rnd = Math.random().toString(16).slice(2);
+    return prefix + "_" + Date.now().toString(16) + "_" + rnd;
+  }
+
+  function formatDisplayDate(dateObj) {
+    const y = dateObj.getFullYear();
+    const m = dateObj.getMonth() + 1;
+    const d = dateObj.getDate();
+    const mm = m < 10 ? "0" + m : "" + m;
+    const dd = d < 10 ? "0" + d : "" + d;
+    return y + "-" + mm + "-" + dd;
+  }
+
+  function parseDateInput(dateStr) {
+    if (!dateStr) return null;
+    const parts = dateStr.split("/");
+    if (parts.length === 3) {
+      const mm = parseInt(parts[0], 10);
+      const dd = parseInt(parts[1], 10);
+      const yy = parseInt(parts[2], 10);
+      if (Number.isFinite(mm) && Number.isFinite(dd) && Number.isFinite(yy)) {
+        const dt = new Date(yy, mm - 1, dd);
+        return isNaN(dt.getTime()) ? null : dt;
+      }
+    }
+    const dt = new Date(dateStr);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  function computeApproximateDate(approx) {
+    const kind = approx && approx.kind ? approx.kind : "unknown";
+
+    if (kind === "exact") {
+      const dt = parseDateInput(approx.exactDate);
+      if (!dt) return { sortIso: "9999-12-31T00:00:00.000Z", label: "Unknown date" };
+      return { sortIso: dt.toISOString(), label: formatDisplayDate(dt) };
+    }
+
+    if (kind === "year") {
+      const y = parseInt(approx.year, 10);
+      if (!Number.isFinite(y)) return { sortIso: "9999-12-31T00:00:00.000Z", label: "Unknown date" };
+      const dt = new Date(y, 6, 1);
+      return { sortIso: dt.toISOString(), label: "Circa " + y };
+    }
+
+    if (kind === "yearMonth") {
+      const y = parseInt(approx.year, 10);
+      const m = parseInt(approx.month, 10);
+      if (!Number.isFinite(y) || !Number.isFinite(m)) return { sortIso: "9999-12-31T00:00:00.000Z", label: "Unknown date" };
+      const mm = clamp(m, 1, 12);
+      const dt = new Date(y, mm - 1, 15);
+      const mm2 = mm < 10 ? "0" + mm : "" + mm;
+      return { sortIso: dt.toISOString(), label: "Circa " + y + "-" + mm2 };
+    }
+
+    if (kind === "range") {
+      const start = parseDateInput(approx.startDate);
+      const end = parseDateInput(approx.endDate);
+      if (!start || !end) return { sortIso: "9999-12-31T00:00:00.000Z", label: "Unknown date" };
+      const mid = new Date((start.getTime() + end.getTime()) / 2);
+      return { sortIso: mid.toISOString(), label: "Between " + formatDisplayDate(start) + " and " + formatDisplayDate(end) };
+    }
+
+    return { sortIso: "9999-12-31T00:00:00.000Z", label: "Unknown date" };
+  }
+
+  function humanFileSize(bytes) {
+    if (!Number.isFinite(bytes)) return "";
+    const thresh = 1024;
+    if (bytes < thresh) return bytes + " B";
+    const units = ["KB", "MB", "GB"];
+    let u = -1;
+    let b = bytes;
+    do {
+      b = b / thresh;
+      u += 1;
+    } while (b >= thresh && u < units.length - 1);
+    return b.toFixed(1) + " " + units[u];
+  }
+
+  function loadState() {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (_) { return null; }
+  }
+
+  function saveState(state) {
+    localStorage.setItem(storageKey, JSON.stringify(state));
+  }
+
+  function initialState() {
+    const circleId = safeId("circle");
+    const adminId = safeId("member");
+    const cousinId = safeId("member");
+    const personGrandpa = safeId("person");
+    const personGrandma = safeId("person");
+
+    return {
+      version: 1,
+      activeCircleId: circleId,
+      activeMemberId: adminId,
+      circles: [
+        {
+          id: circleId,
+          name: "Stepel Family Circle",
+          description: "A private circle for stories, photos, and records.",
+          createdAt: nowIso(),
+          createdBy: adminId,
+          moderators: [adminId],
+          members: [adminId, cousinId],
+          people: [
+            { id: personGrandpa, displayName: "Grandpa Abraham", notes: "Born in 1919, known for war stories." },
+            { id: personGrandma, displayName: "Grandma Sarah", notes: "Keeper of the chicken soup recipe." }
+          ],
+          posts: []
+        }
+      ],
+      members: [
+        { id: adminId, displayName: "Dan", email: "dan@example.com" },
+        { id: cousinId, displayName: "Cousin Leah", email: "leah@example.com" }
+      ]
+    };
+  }
+
+  const state = (function () {
+    const loaded = loadState();
+    if (loaded && loaded.version === 1) return loaded;
+    const fresh = initialState();
+    saveState(fresh);
+    return fresh;
+  })();
+
+  function el(tag, styleObj) {
+    const e = document.createElement(tag);
+    if (styleObj) applyStyle(e, styleObj);
+    return e;
+  }
+
+  function applyStyle(node, styleObj) {
+    const keys = Object.keys(styleObj);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      node.style[k] = styleObj[k];
+    }
+  }
+
+  function text(node, s) { node.textContent = s; }
+
+  function button(label, onClick, variant) {
+    const b = el("button", {
+      cursor: "pointer",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      padding: "10px 12px",
+      background: variant === "primary" ? "#111827" : "#ffffff",
+      color: variant === "primary" ? "#ffffff" : "#111827",
+      fontSize: "14px",
+      fontWeight: "600"
+    });
+    b.type = "button";
+    text(b, label);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function inputText(placeholder, value) {
+    const i = el("input", {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px"
+    });
+    i.type = "text";
+    i.placeholder = placeholder || "";
+    i.value = value || "";
+    return i;
+  }
+
+  function inputDate(value) {
+    const i = el("input", {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px"
+    });
+    i.type = "date";
+    if (value) i.value = value;
+    return i;
+  }
+
+  function select(options, value) {
+    const s = el("select", {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px"
+    });
+    for (let i = 0; i < options.length; i++) {
+      const opt = document.createElement("option");
+      opt.value = options[i].value;
+      opt.textContent = options[i].label;
+      s.appendChild(opt);
+    }
+    s.value = value;
+    return s;
+  }
+
+  function card() {
+    return el("div", {
+      background: "#ffffff",
+      border: "1px solid rgba(0,0,0,0.08)",
+      borderRadius: "16px",
+      padding: "14px",
+      boxShadow: "0 6px 20px rgba(0,0,0,0.06)"
+    });
+  }
+
+  function h2(titleText) {
+    const t = el("div", { fontSize: "18px", fontWeight: "800", marginBottom: "10px" });
+    text(t, titleText);
+    return t;
+  }
+
+  function smallMuted(s) {
+    const t = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+    text(t, s);
+    return t;
+  }
+
+  function row(gap) {
+    return el("div", { display: "flex", gap: gap || "10px", alignItems: "center" });
+  }
+
+  function col(gap) {
+    return el("div", { display: "flex", flexDirection: "column", gap: gap || "10px" });
+  }
+
+  function divider() {
+    return el("div", { height: "1px", background: "rgba(0,0,0,0.08)", margin: "10px 0" });
+  }
+
+  function toast(message) {
+    const t = el("div", {
+      position: "fixed",
+      left: "50%",
+      bottom: "18px",
+      transform: "translateX(-50%)",
+      background: "#111827",
+      color: "#ffffff",
+      padding: "10px 12px",
+      borderRadius: "12px",
+      fontSize: "13px",
+      boxShadow: "0 10px 25px rgba(0,0,0,0.2)",
+      zIndex: "9999"
+    });
+    text(t, message);
+    document.body.appendChild(t);
+    setTimeout(function () {
+      if (t && t.parentNode) t.parentNode.removeChild(t);
+    }, 2200);
+  }
+
+  function getCircle(circleId) {
+    for (let i = 0; i < state.circles.length; i++) {
+      if (state.circles[i].id === circleId) return state.circles[i];
+    }
+    return null;
+  }
+
+  function getMember(memberId) {
+    for (let i = 0; i < state.members.length; i++) {
+      if (state.members[i].id === memberId) return state.members[i];
+    }
+    return null;
+  }
+
+  function isModerator(circle, memberId) {
+    return circle && circle.moderators && circle.moderators.indexOf(memberId) >= 0;
+  }
+
+  function addMember(displayName, email) {
+    const m = { id: safeId("member"), displayName: displayName || "New Member", email: email || "" };
+    state.members.push(m);
+    saveState(state);
+    return m;
+  }
+
+  function addPerson(circle, displayName, notes) {
+    const p = { id: safeId("person"), displayName: displayName || "New Person", notes: notes || "" };
+    circle.people.push(p);
+    saveState(state);
+    return p;
+  }
+
+  function addPost(circle, post) {
+    circle.posts.unshift(post);
+    saveState(state);
+  }
+
+  function addComment(circle, postId, comment) {
+    const post = circle.posts.find(function (p) { return p.id === postId; });
+    if (!post) return;
+    post.comments = post.comments || [];
+    post.comments.push(comment);
+    saveState(state);
+  }
+
+  function deletePost(circle, postId) {
+    const idx = circle.posts.findIndex(function (p) { return p.id === postId; });
+    if (idx < 0) return;
+    circle.posts.splice(idx, 1);
+    saveState(state);
+  }
+
+  function circleTimelineItems(circle) {
+    const items = [];
+    for (let i = 0; i < circle.posts.length; i++) {
+      const p = circle.posts[i];
+      const approx = computeApproximateDate(p.when || { kind: "unknown" });
+      const people = Array.isArray(p.peopleIds) ? p.peopleIds : [];
+      for (let j = 0; j < people.length; j++) {
+        items.push({
+          personId: people[j],
+          postId: p.id,
+          sortIso: approx.sortIso,
+          dateLabel: approx.label,
+          title: p.title || "(Untitled)",
+          body: p.body || "",
+          circleName: circle.name,
+          attachments: p.attachments || [],
+          authorId: p.authorId,
+          createdAt: p.createdAt
+        });
+      }
+    }
+    items.sort(function (a, b) {
+      if (a.sortIso < b.sortIso) return -1;
+      if (a.sortIso > b.sortIso) return 1;
+      return 0;
+    });
+    return items;
+  }
+
+  let route = { name: "feed" };
+  let selectedPersonId = null;
+
+  document.body.style.margin = "0";
+  document.body.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
+  document.body.style.background = "rgba(17,24,39,0.04)";
+  document.body.style.color = "#111827";
+
+  const app = el("div", { maxWidth: "1100px", margin: "0 auto", padding: "18px" });
+  document.body.appendChild(app);
+
+  function render() {
+    app.innerHTML = "";
+
+    const circle = getCircle(state.activeCircleId);
+    const member = getMember(state.activeMemberId);
+
+    const top = el("div", { display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "14px" });
+    const left = col("6px");
+    const title = el("div", { fontSize: "22px", fontWeight: "900" });
+    text(title, circle ? circle.name : "Family Circle");
+    const subtitle = el("div", { fontSize: "13px", color: "rgba(0,0,0,0.6)" });
+    text(subtitle, "Signed in as " + (member ? member.displayName : "Unknown") + "    Prototype data is stored locally in your browser");
+    left.appendChild(title);
+    left.appendChild(subtitle);
+
+    const right = row("10px");
+    const circleSelect = select(
+      state.circles.map(function (c) { return { value: c.id, label: c.name }; }),
+      state.activeCircleId
+    );
+    circleSelect.addEventListener("change", function () {
+      state.activeCircleId = circleSelect.value;
+      saveState(state);
+      route = { name: "feed" };
+      selectedPersonId = null;
+      render();
+    });
+
+    const memberSelect = select(
+      state.members.map(function (m) { return { value: m.id, label: m.displayName }; }),
+      state.activeMemberId
+    );
+    memberSelect.addEventListener("change", function () {
+      state.activeMemberId = memberSelect.value;
+      saveState(state);
+      render();
+    });
+
+    applyStyle(circleSelect, { width: "220px" });
+    applyStyle(memberSelect, { width: "180px" });
+    right.appendChild(circleSelect);
+    right.appendChild(memberSelect);
+
+    top.appendChild(left);
+    top.appendChild(right);
+    app.appendChild(top);
+
+    const nav = row("10px");
+    const feedBtn = button("Circle Feed", function () { route = { name: "feed" }; selectedPersonId = null; render(); }, route.name === "feed" ? "primary" : "default");
+    const peopleBtn = button("People and Timelines", function () { route = { name: "people" }; selectedPersonId = null; render(); }, route.name === "people" ? "primary" : "default");
+    const settingsBtn = button("Circle Settings", function () { route = { name: "settings" }; selectedPersonId = null; render(); }, route.name === "settings" ? "primary" : "default");
+    nav.appendChild(feedBtn);
+    nav.appendChild(peopleBtn);
+    nav.appendChild(settingsBtn);
+    app.appendChild(nav);
+
+    app.appendChild(el("div", { height: "12px" }));
+
+    if (!circle) {
+      const c = card();
+      c.appendChild(h2("No circle selected"));
+      app.appendChild(c);
+      return;
+    }
+
+    if (route.name === "feed") renderFeed(circle, member);
+    if (route.name === "people") renderPeople(circle, member);
+    if (route.name === "person") renderPerson(circle, member, selectedPersonId);
+    if (route.name === "settings") renderSettings(circle, member);
+  }
+
+  function renderFeed(circle, member) {
+    // Facebook-style composer: collapsed "Post" bar that opens a chooser + composer modal
+    const wrap = col("14px");
+
+    const composer = card();
+    const topRow = row("10px");
+    const avatar = el("div", {
+      width: "36px",
+      height: "36px",
+      borderRadius: "999px",
+      background: "rgba(17,24,39,0.10)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: "900",
+      color: "#111827"
+    });
+    avatar.textContent = (member && member.displayName ? member.displayName.slice(0, 1).toUpperCase() : "?");
+
+    const postBar = el("button", {
+      width: "100%",
+      textAlign: "left",
+      padding: "10px 12px",
+      borderRadius: "999px",
+      border: "1px solid rgba(0,0,0,0.12)",
+      background: "rgba(17,24,39,0.03)",
+      fontSize: "14px",
+      cursor: "pointer"
+    });
+    postBar.type = "button";
+    postBar.textContent = "Post to this family circle";
+
+    postBar.addEventListener("click", function () {
+      openPostChooser(circle);
+    });
+
+    topRow.appendChild(avatar);
+    topRow.appendChild(postBar);
+    composer.appendChild(h2("Post"));
+    composer.appendChild(smallMuted("Choose a post type, tag people, && place it on the right timeline date."));
+    composer.appendChild(topRow);
+
+    // Quick action buttons
+    const quick = row("10px");
+    quick.appendChild(button("Tell a story", function () { openComposer(circle, "story"); }, "default"));
+    quick.appendChild(button("Photo", function () { openComposer(circle, "photo"); }, "default"));
+    quick.appendChild(button("Video", function () { openComposer(circle, "video"); }, "default"));
+    quick.appendChild(button("Audio", function () { openComposer(circle, "audio"); }, "default"));
+    quick.appendChild(button("File", function () { openComposer(circle, "file"); }, "default"));
+    composer.appendChild(el("div", { height: "6px" }));
+    composer.appendChild(quick);
+
+    wrap.appendChild(composer);
+
+    const feedCard = card();
+    feedCard.appendChild(h2("Feed"));
+    feedCard.appendChild(smallMuted("Members can comment. Moderators can delete posts."));
+    const feedList = col("12px");
+    if (circle.posts.length === 0) {
+      const empty = el("div", { padding: "12px", borderRadius: "12px", border: "1px dashed rgba(0,0,0,0.15)", background: "rgba(255,255,255,0.7)" });
+      empty.textContent = "No posts yet. Add the first story.";
+      feedList.appendChild(empty);
+    } else {
+      circle.posts.forEach(function (p) { feedList.appendChild(postCard(circle, p)); });
+    }
+    feedCard.appendChild(feedList);
+    wrap.appendChild(feedCard);
+
+    app.appendChild(wrap);
+  }
+
+  function openPostChooser(circle) {
+    const modal = buildModal("Create a post", function () {});
+    modal.content.appendChild(smallMuted("Pick a post type. You can still add text && tag people for timelines."));
+
+    const grid = el("div", { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "10px" });
+
+    function chooserTile(titleText, descText, mode) {
+      const tile = el("button", {
+        textAlign: "left",
+        padding: "12px",
+        borderRadius: "14px",
+        border: "1px solid rgba(0,0,0,0.10)",
+        background: "rgba(255,255,255,0.95)",
+        cursor: "pointer"
+      });
+      tile.type = "button";
+      const t = el("div", { fontSize: "14px", fontWeight: "900" });
+      t.textContent = titleText;
+      const d = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)", marginTop: "4px" });
+      d.textContent = descText;
+      tile.appendChild(t);
+      tile.appendChild(d);
+      tile.addEventListener("click", function () {
+        modal.close();
+        openComposer(circle, mode);
+      });
+      return tile;
+    }
+
+    grid.appendChild(chooserTile("Tell a story", "A memory, anecdote, recipe, or history note.", "story"));
+    grid.appendChild(chooserTile("Post a photo", "Upload one or more images && add a caption.", "photo"));
+    grid.appendChild(chooserTile("Post a video", "Upload a video && add context.", "video"));
+    grid.appendChild(chooserTile("Post audio", "Upload a voice note, interview, or song.", "audio"));
+    grid.appendChild(chooserTile("Post a file", "Upload PDFs, certificates, scans, or anything else.", "file"));
+
+    modal.content.appendChild(grid);
+    modal.footer.appendChild(button("Close", function () { modal.close(); }, "primary"));
+    modal.open();
+  }
+
+  function openComposer(circle, mode) {
+    const modalTitle =
+      mode === "photo" ? "Post a photo" :
+      mode === "video" ? "Post a video" :
+      mode === "audio" ? "Post audio" :
+      mode === "file" ? "Post a file" :
+      "Tell a story";
+
+    const modal = buildModal(modalTitle, function () {});
+    const content = modal.content;
+
+    const titleInput = inputText("Title", "");
+    const bodyInput = el("textarea", {
+      width: "100%",
+      minHeight: "110px",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px",
+      resize: "vertical"
+    });
+    bodyInput.placeholder = mode === "story" ? "Tell the story here" : "Add a caption or context";
+
+    // Tag people
+    const peopleMulti = el("div", { display: "flex", flexWrap: "wrap", gap: "8px" });
+    const selectedPeople = new Set();
+    circle.people.forEach(function (p) {
+      const chip = el("button", {
+        cursor: "pointer",
+        borderRadius: "999px",
+        border: "1px solid rgba(0,0,0,0.15)",
+        padding: "6px 10px",
+        background: "#ffffff",
+        fontSize: "13px"
+      });
+      chip.type = "button";
+      chip.textContent = p.displayName;
+      chip.addEventListener("click", function () {
+        if (selectedPeople.has(p.id)) {
+          selectedPeople.delete(p.id);
+          chip.style.background = "#ffffff";
+          chip.style.color = "#111827";
+        } else {
+          selectedPeople.add(p.id);
+          chip.style.background = "#111827";
+          chip.style.color = "#ffffff";
+        }
+      });
+      peopleMulti.appendChild(chip);
+    });
+
+    // When selector
+    const whenKind = select(
+      [
+        { value: "exact", label: "Exact date" },
+        { value: "yearMonth", label: "Approximate month" },
+        { value: "year", label: "Approximate year" },
+        { value: "range", label: "Approximate range" },
+        { value: "unknown", label: "Unknown" }
+      ],
+      "exact"
+    );
+
+    const whenFields = el("div", { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" });
+    const exactDate = inputDate("");
+    const yearInput = inputText("Year (example 1944)", "");
+    const monthInput = select(
+      [
+        { value: "1", label: "Jan" }, { value: "2", label: "Feb" }, { value: "3", label: "Mar" }, { value: "4", label: "Apr" },
+        { value: "5", label: "May" }, { value: "6", label: "Jun" }, { value: "7", label: "Jul" }, { value: "8", label: "Aug" },
+        { value: "9", label: "Sep" }, { value: "10", label: "Oct" }, { value: "11", label: "Nov" }, { value: "12", label: "Dec" }
+      ],
+      "1"
+    );
+    const rangeStart = inputDate("");
+    const rangeEnd = inputDate("");
+
+    function previewBox(getTextFn) {
+      const box = el("div", {
+        padding: "10px 12px",
+        borderRadius: "10px",
+        border: "1px solid rgba(0,0,0,0.10)",
+        background: "rgba(17,24,39,0.03)",
+        fontSize: "13px",
+        minHeight: "18px",
+        display: "flex",
+        alignItems: "center"
+      });
+      function update() { box.textContent = getTextFn(); }
+      update();
+      return box;
+    }
+
+    function labelWrap(labelText, field, spanTwo) {
+      const w = el("div", {});
+      if (spanTwo) w.style.gridColumn = "1 / span 2";
+      const l = el("div", { fontSize: "12px", fontWeight: "700", marginBottom: "6px" });
+      text(l, labelText);
+      w.appendChild(l);
+      w.appendChild(field);
+      return w;
+    }
+
+    function renderWhenFields() {
+      whenFields.innerHTML = "";
+      const k = whenKind.value;
+      if (k === "exact") {
+        whenFields.appendChild(labelWrap("Date", exactDate));
+        whenFields.appendChild(labelWrap("Timeline preview", previewBox(function () {
+          const res = computeApproximateDate({ kind: "exact", exactDate: exactDate.value });
+          return res.label;
+        })));
+      }
+      if (k === "year") {
+        whenFields.appendChild(labelWrap("Year", yearInput));
+        whenFields.appendChild(labelWrap("Timeline preview", previewBox(function () {
+          const res = computeApproximateDate({ kind: "year", year: yearInput.value });
+          return res.label;
+        })));
+      }
+      if (k === "yearMonth") {
+        whenFields.appendChild(labelWrap("Year", yearInput));
+        whenFields.appendChild(labelWrap("Month", monthInput));
+        whenFields.appendChild(labelWrap("Timeline preview", previewBox(function () {
+          const res = computeApproximateDate({ kind: "yearMonth", year: yearInput.value, month: monthInput.value });
+          return res.label;
+        }), true));
+      }
+      if (k === "range") {
+        whenFields.appendChild(labelWrap("Start", rangeStart));
+        whenFields.appendChild(labelWrap("End", rangeEnd));
+        whenFields.appendChild(labelWrap("Timeline preview", previewBox(function () {
+          const res = computeApproximateDate({ kind: "range", startDate: rangeStart.value, endDate: rangeEnd.value });
+          return res.label;
+        }), true));
+      }
+      if (k === "unknown") {
+        whenFields.appendChild(labelWrap("Timeline preview", previewBox(function () {
+          const res = computeApproximateDate({ kind: "unknown" });
+          return res.label;
+        })));
+      }
+    }
+
+    whenKind.addEventListener("change", renderWhenFields);
+    exactDate.addEventListener("change", renderWhenFields);
+    yearInput.addEventListener("input", renderWhenFields);
+    monthInput.addEventListener("change", renderWhenFields);
+    rangeStart.addEventListener("change", renderWhenFields);
+    rangeEnd.addEventListener("change", renderWhenFields);
+
+    // Attachments
+    const attachments = [];
+    const fileInput = el("input", {
+      width: "100%",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px",
+      background: "#ffffff"
+    });
+    fileInput.type = "file";
+    fileInput.multiple = true;
+
+    // Set accept filters by mode
+    if (mode === "photo") fileInput.accept = "image/*";
+    if (mode === "video") fileInput.accept = "video/*";
+    if (mode === "audio") fileInput.accept = "audio/*";
+    // mode "file" && "story" accept anything
+
+    const attachmentList = el("div", { display: "flex", flexDirection: "column", gap: "8px", marginTop: "6px" });
+
+    function inferAttachmentKind(mime, name) {
+      const t = (mime || "").toLowerCase();
+      if (t.indexOf("image/") === 0) return "image";
+      if (t.indexOf("video/") === 0) return "video";
+      if (t.indexOf("audio/") === 0) return "audio";
+      const lower = (name || "").toLowerCase();
+      if (lower.endsWith(".pdf")) return "document";
+      return "file";
+    }
+
+    function attachmentRow(att) {
+      const r = el("div", { display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "center", padding: "8px 10px", borderRadius: "12px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.9)" });
+      const leftSide = col("2px");
+      const name = el("div", { fontSize: "13px", fontWeight: "800" });
+      name.textContent = att.fileName;
+      const meta = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+      meta.textContent = att.kind + "    " + humanFileSize(att.sizeBytes);
+      leftSide.appendChild(name);
+      leftSide.appendChild(meta);
+      r.appendChild(leftSide);
+      r.appendChild(button("Remove", function () {
+        const idx = attachments.findIndex(function (x) { return x.id === att.id; });
+        if (idx >= 0) attachments.splice(idx, 1);
+        renderAttachmentList();
+      }, "default"));
+      return r;
+    }
+
+    function renderAttachmentList() {
+      attachmentList.innerHTML = "";
+      attachments.forEach(function (a) { attachmentList.appendChild(attachmentRow(a)); });
+    }
+
+    fileInput.addEventListener("change", function () {
+      const files = Array.from(fileInput.files || []);
+      files.forEach(function (f) {
+        const item = {
+          id: safeId("att"),
+          fileName: f.name,
+          mimeType: f.type || "application/octet-stream",
+          sizeBytes: f.size,
+          kind: inferAttachmentKind(f.type, f.name),
+          objectUrl: URL.createObjectURL(f),
+          persistedDataUrl: null
+        };
+        attachments.push(item);
+
+        if (item.kind === "image" && f.size <= 900 * 1024) {
+          const reader = new FileReader();
+          reader.onload = function () { item.persistedDataUrl = reader.result; };
+          reader.readAsDataURL(f);
+        }
+      });
+      fileInput.value = "";
+      renderAttachmentList();
+    });
+
+    // Build form
+    content.appendChild(labelWrap("Title", titleInput));
+    content.appendChild(labelWrap("Text", bodyInput, true));
+    content.appendChild(labelWrap("Tag people for timeline", peopleMulti, true));
+    content.appendChild(labelWrap("When did it happen", whenKind));
+    renderWhenFields();
+    content.appendChild(whenFields);
+
+    // Show attachments section for non story, but also allow story to attach files if desired
+    const attachLabel =
+      mode === "photo" ? "Photos" :
+      mode === "video" ? "Videos" :
+      mode === "audio" ? "Audio" :
+      mode === "file" ? "Files" :
+      "Attachments (optional)";
+
+    content.appendChild(labelWrap(attachLabel, fileInput, true));
+    content.appendChild(attachmentList);
+
+    // Footer actions
+    modal.footer.appendChild(button("Cancel", function () { modal.close(); }, "default"));
+    modal.footer.appendChild(button("Post", function () {
+      const peopleIds = Array.from(selectedPeople);
+
+      if (!titleInput.value.trim() && !bodyInput.value.trim() && attachments.length === 0) {
+        toast("Add a title, text, or attachment");
+        return;
+      }
+      if (peopleIds.length === 0) {
+        toast("Tag at least one person so this can land on a timeline");
+        return;
+      }
+
+      const when = (function () {
+        const k = whenKind.value;
+        if (k === "exact") return { kind: "exact", exactDate: exactDate.value || "" };
+        if (k === "year") return { kind: "year", year: yearInput.value || "" };
+        if (k === "yearMonth") return { kind: "yearMonth", year: yearInput.value || "", month: monthInput.value || "1" };
+        if (k === "range") return { kind: "range", startDate: rangeStart.value || "", endDate: rangeEnd.value || "" };
+        return { kind: "unknown" };
+      })();
+
+      const post = {
+        id: safeId("post"),
+        circleId: circle.id,
+        authorId: state.activeMemberId,
+        createdAt: nowIso(),
+        title: titleInput.value.trim(),
+        body: bodyInput.value.trim(),
+        peopleIds: peopleIds,
+        when: when,
+        postType: mode,
+        attachments: attachments.map(function (a) {
+          return {
+            id: a.id,
+            fileName: a.fileName,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+            kind: a.kind,
+            persistedDataUrl: a.persistedDataUrl || null
+          };
+        }),
+        comments: []
+      };
+
+      addPost(circle, post);
+      modal.close();
+      toast("Posted");
+      render();
+    }, "primary"));
+
+    modal.open();
+  }
+
+  function postCard(circle, post) {
+    const c = el("div", {
+      padding: "12px",
+      borderRadius: "16px",
+      border: "1px solid rgba(0,0,0,0.08)",
+      background: "rgba(255,255,255,0.95)"
+    });
+
+    const head = el("div", { display: "flex", justifyContent: "space-between", gap: "10px" });
+    const left = col("4px");
+    const title = el("div", { fontSize: "15px", fontWeight: "900" });
+    title.textContent = post.title || "(Untitled)";
+    const author = getMember(post.authorId);
+    const meta = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+    const whenInfo = computeApproximateDate(post.when || { kind: "unknown" });
+    const created = new Date(post.createdAt);
+    meta.textContent = (author ? author.displayName : "Unknown") + "    " + whenInfo.label + "    posted " + created.toLocaleString();
+    left.appendChild(title);
+    left.appendChild(meta);
+
+    const actions = row("8px");
+    if (isModerator(circle, state.activeMemberId)) {
+      actions.appendChild(button("Delete", function () {
+        deletePost(circle, post.id);
+        toast("Deleted");
+        render();
+      }, "default"));
+    }
+
+    head.appendChild(left);
+    head.appendChild(actions);
+    c.appendChild(head);
+
+    if (post.body) {
+      const body = el("div", { marginTop: "10px", fontSize: "14px", lineHeight: "1.4" });
+      body.textContent = post.body;
+      c.appendChild(body);
+    }
+
+    const tagged = el("div", { marginTop: "10px", display: "flex", flexWrap: "wrap", gap: "6px" });
+    (post.peopleIds || []).forEach(function (pid) {
+      const person = circle.people.find(function (p) { return p.id === pid; });
+      if (!person) return;
+      const chip = el("div", { fontSize: "12px", padding: "5px 8px", borderRadius: "999px", border: "1px solid rgba(0,0,0,0.12)", background: "rgba(17,24,39,0.03)" });
+      chip.textContent = person.displayName;
+      tagged.appendChild(chip);
+    });
+    c.appendChild(tagged);
+
+    if (post.attachments && post.attachments.length) {
+      const attWrap = el("div", { marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" });
+      post.attachments.forEach(function (a) {
+        const r = el("div", { display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "center", padding: "8px 10px", borderRadius: "12px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(17,24,39,0.02)" });
+        const leftSide = col("2px");
+        const name = el("div", { fontSize: "13px", fontWeight: "800" });
+        name.textContent = a.fileName;
+        const meta = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+        meta.textContent = a.kind + "    " + humanFileSize(a.sizeBytes);
+        leftSide.appendChild(name);
+        leftSide.appendChild(meta);
+        const pv = button("Preview", function () {
+          const modal = buildModal("Attachment preview", function () {});
+          if (a.kind === "image" && a.persistedDataUrl) {
+            const img = el("img", { width: "100%", borderRadius: "12px", border: "1px solid rgba(0,0,0,0.08)" });
+            img.src = a.persistedDataUrl;
+            modal.content.appendChild(img);
+          } else {
+            const note = el("div", { fontSize: "13px", color: "rgba(0,0,0,0.7)" });
+            note.textContent = "This attachment is stored as metadata in the prototype. In the real app it will be stored in object storage and streamed securely.";
+            modal.content.appendChild(note);
+          }
+          modal.footer.appendChild(button("Close", function () { modal.close(); }, "primary"));
+          modal.open();
+        }, "default");
+        r.appendChild(leftSide);
+        r.appendChild(pv);
+        attWrap.appendChild(r);
+      });
+      c.appendChild(attWrap);
+    }
+
+    c.appendChild(divider());
+
+    const comments = col("10px");
+    const commentTitle = el("div", { fontSize: "13px", fontWeight: "900" });
+    commentTitle.textContent = "Comments";
+    comments.appendChild(commentTitle);
+
+    const list = col("8px");
+    const postComments = post.comments || [];
+    if (postComments.length === 0) {
+      const none = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+      none.textContent = "No comments yet";
+      list.appendChild(none);
+    } else {
+      postComments.forEach(function (cm) {
+        const rowEl = el("div", { padding: "8px 10px", borderRadius: "12px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.9)" });
+        const who = getMember(cm.authorId);
+        const meta2 = el("div", { fontSize: "12px", fontWeight: "800" });
+        meta2.textContent = (who ? who.displayName : "Unknown") + "    " + new Date(cm.createdAt).toLocaleString();
+        const body2 = el("div", { fontSize: "13px", marginTop: "6px", whiteSpace: "pre-wrap" });
+        body2.textContent = cm.body || "";
+        rowEl.appendChild(meta2);
+        rowEl.appendChild(body2);
+        list.appendChild(rowEl);
+      });
+    }
+    comments.appendChild(list);
+
+    const add = el("div", { display: "flex", gap: "10px", marginTop: "10px", alignItems: "flex-start" });
+    const commentBox = el("textarea", {
+      width: "100%",
+      minHeight: "42px",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px",
+      resize: "vertical"
+    });
+    commentBox.placeholder = "Write a comment";
+
+    const addBtn = button("Comment", function () {
+      const body = (commentBox.value || "").trim();
+      if (!body) return;
+      addComment(circle, post.id, { id: safeId("comment"), authorId: state.activeMemberId, createdAt: nowIso(), body: body });
+      toast("Comment added");
+      render();
+    }, "primary");
+
+    add.appendChild(commentBox);
+    add.appendChild(addBtn);
+    comments.appendChild(add);
+
+    c.appendChild(comments);
+    return c;
+  }
+
+  function renderPeople(circle, member) {
+    const layout = el("div", { display: "grid", gridTemplateColumns: "360px 1fr", gap: "14px" });
+
+    const left = card();
+    left.appendChild(h2("People"));
+    left.appendChild(smallMuted("These are the people you tag in posts. Each person has a timeline built from tagged posts."));
+    const personList = col("10px");
+
+    circle.people.forEach(function (p) {
+      const item = el("div", { padding: "10px 12px", borderRadius: "14px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.95)", cursor: "pointer" });
+      const nm = el("div", { fontSize: "14px", fontWeight: "900" });
+      nm.textContent = p.displayName;
+      const nt = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)", marginTop: "4px" });
+      nt.textContent = p.notes || "";
+      item.appendChild(nm);
+      item.appendChild(nt);
+      item.addEventListener("click", function () {
+        selectedPersonId = p.id;
+        route = { name: "person" };
+        render();
+      });
+      personList.appendChild(item);
+    });
+
+    if (circle.people.length === 0) {
+      const empty = el("div", { padding: "12px", borderRadius: "12px", border: "1px dashed rgba(0,0,0,0.15)", background: "rgba(255,255,255,0.7)" });
+      empty.textContent = "No people yet";
+      personList.appendChild(empty);
+    }
+
+    left.appendChild(personList);
+
+    left.appendChild(divider());
+
+    const addTitle = el("div", { fontSize: "13px", fontWeight: "900" });
+    addTitle.textContent = "Add person";
+    const nameIn = inputText("Display name", "");
+    const notesIn = inputText("Notes (optional)", "");
+    const addBtn = button("Add", function () {
+      const nm2 = (nameIn.value || "").trim();
+      if (!nm2) { toast("Add a name"); return; }
+      addPerson(circle, nm2, (notesIn.value || "").trim());
+      toast("Person added");
+      render();
+    }, "primary");
+
+    left.appendChild(addTitle);
+    left.appendChild(nameIn);
+    left.appendChild(notesIn);
+    left.appendChild(addBtn);
+
+    const right = card();
+    right.appendChild(h2("Timeline overview"));
+    right.appendChild(smallMuted("Select a person on the left to view their timeline."));
+    const sample = el("div", { padding: "14px", borderRadius: "16px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(17,24,39,0.02)" });
+    sample.textContent = "Tip: Create a post in the Circle Feed, tag a person, and the timeline will populate automatically.";
+    right.appendChild(sample);
+
+    layout.appendChild(left);
+    layout.appendChild(right);
+    app.appendChild(layout);
+  }
+
+  function renderPerson(circle, member, personId) {
+    const person = circle.people.find(function (p) { return p.id === personId; });
+    const wrap = card();
+    const top = row("10px");
+    top.appendChild(button("Back to people", function () { route = { name: "people" }; render(); }, "default"));
+    wrap.appendChild(top);
+
+    if (!person) {
+      wrap.appendChild(h2("Person not found"));
+      app.appendChild(wrap);
+      return;
+    }
+
+    wrap.appendChild(h2(person.displayName));
+    if (person.notes) wrap.appendChild(smallMuted(person.notes));
+    wrap.appendChild(divider());
+
+    const timeline = circleTimelineItems(circle).filter(function (it) { return it.personId === personId; });
+
+    const list = col("12px");
+    if (timeline.length === 0) {
+      const empty = el("div", { padding: "12px", borderRadius: "12px", border: "1px dashed rgba(0,0,0,0.15)", background: "rgba(255,255,255,0.7)" });
+      empty.textContent = "No timeline items yet. Create posts and tag this person.";
+      list.appendChild(empty);
+    } else {
+      timeline.forEach(function (it) {
+        const item = el("div", { padding: "12px", borderRadius: "16px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.95)" });
+        const head = el("div", { display: "flex", justifyContent: "space-between", gap: "10px" });
+        const left = col("3px");
+        const t = el("div", { fontSize: "14px", fontWeight: "900" });
+        t.textContent = it.title;
+        const d = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+        d.textContent = it.dateLabel + "    from " + it.circleName;
+        left.appendChild(t);
+        left.appendChild(d);
+        head.appendChild(left);
+
+        const openBtn = button("Open post", function () {
+          const post = circle.posts.find(function (p) { return p.id === it.postId; });
+          if (!post) return;
+          const modal = buildModal("Post", function () {});
+          modal.content.appendChild(postCard(circle, post));
+          modal.footer.appendChild(button("Close", function () { modal.close(); }, "primary"));
+          modal.open();
+        }, "default");
+        head.appendChild(openBtn);
+
+        item.appendChild(head);
+
+        if (it.body) {
+          const b = el("div", { marginTop: "8px", fontSize: "13px", color: "rgba(0,0,0,0.85)" });
+          b.textContent = it.body;
+          item.appendChild(b);
+        }
+
+        list.appendChild(item);
+      });
+    }
+
+    wrap.appendChild(list);
+    app.appendChild(wrap);
+  }
+
+  function labelLine(labelText, field) {
+    const w = el("div", {});
+    const l = el("div", { fontSize: "12px", fontWeight: "800", marginBottom: "6px" });
+    l.textContent = labelText;
+    w.appendChild(l);
+    w.appendChild(field);
+    w.appendChild(el("div", { height: "8px" }));
+    return w;
+  }
+
+  function renderSettings(circle, member) {
+    const layout = el("div", { display: "grid", gridTemplateColumns: "420px 1fr", gap: "14px" });
+
+    const left = card();
+    left.appendChild(h2("Circle settings"));
+
+    const nm = inputText("Circle name", circle.name);
+    const desc = el("textarea", {
+      width: "100%",
+      minHeight: "70px",
+      padding: "10px 12px",
+      borderRadius: "10px",
+      border: "1px solid rgba(0,0,0,0.15)",
+      fontSize: "14px",
+      resize: "vertical"
+    });
+    desc.value = circle.description || "";
+    desc.placeholder = "Description";
+
+    const saveBtn = button("Save", function () {
+      circle.name = (nm.value || "").trim() || circle.name;
+      circle.description = (desc.value || "").trim();
+      saveState(state);
+      toast("Saved");
+      render();
+    }, "primary");
+
+    left.appendChild(smallMuted("Only local data is changed in this prototype."));
+    left.appendChild(el("div", { height: "6px" }));
+    left.appendChild(labelLine("Name", nm));
+    left.appendChild(labelLine("Description", desc));
+    left.appendChild(saveBtn);
+
+    left.appendChild(divider());
+    left.appendChild(h2("Members and moderators"));
+    left.appendChild(smallMuted("Moderators can delete posts."));
+
+    const canManageMods = isModerator(circle, state.activeMemberId);
+
+    const memberList = col("10px");
+    circle.members.forEach(function (mid) {
+      const m = getMember(mid);
+      if (!m) return;
+      const rowEl = el("div", { display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "center", padding: "10px 12px", borderRadius: "14px", border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.95)" });
+      const leftSide = col("2px");
+      const name = el("div", { fontSize: "14px", fontWeight: "900" });
+      name.textContent = m.displayName;
+      const em = el("div", { fontSize: "12px", color: "rgba(0,0,0,0.6)" });
+      em.textContent = m.email || "";
+      leftSide.appendChild(name);
+      leftSide.appendChild(em);
+
+      const rightSide = row("8px");
+      const badge = el("div", { fontSize: "12px", padding: "5px 8px", borderRadius: "999px", border: "1px solid rgba(0,0,0,0.12)", background: isModerator(circle, m.id) ? "rgba(17,24,39,0.05)" : "rgba(255,255,255,1)" });
+      badge.textContent = isModerator(circle, m.id) ? "Moderator" : "Member";
+      rightSide.appendChild(badge);
+
+      if (canManageMods) {
+        const toggle = button(isModerator(circle, m.id) ? "Remove moderator" : "Make moderator", function () {
+          if (isModerator(circle, m.id)) {
+            if (circle.moderators.length === 1) { toast("Keep at least one moderator"); return; }
+            circle.moderators = circle.moderators.filter(function (x) { return x !== m.id; });
+          } else {
+            circle.moderators.push(m.id);
+          }
+          saveState(state);
+          render();
+        }, "default");
+        rightSide.appendChild(toggle);
+      }
+
+      rowEl.appendChild(leftSide);
+      rowEl.appendChild(rightSide);
+      memberList.appendChild(rowEl);
+    });
+    left.appendChild(memberList);
+
+    left.appendChild(divider());
+    left.appendChild(h2("Add member to circle"));
+    const newMemberName = inputText("Name", "");
+    const newMemberEmail = inputText("Email (optional)", "");
+    const addMemberBtn = button("Create member and add", function () {
+      const nm2 = (newMemberName.value || "").trim();
+      if (!nm2) { toast("Add a name"); return; }
+      const m = addMember(nm2, (newMemberEmail.value || "").trim());
+      circle.members.push(m.id);
+      saveState(state);
+      toast("Added");
+      render();
+    }, "primary");
+    left.appendChild(newMemberName);
+    left.appendChild(newMemberEmail);
+    left.appendChild(addMemberBtn);
+
+    const right = card();
+    right.appendChild(h2("Create a new circle"));
+    right.appendChild(smallMuted("This is for testing multiple circles in the same browser. In the real app circles will live in the database."));
+
+    const cn = inputText("Circle name", "");
+    const cd = inputText("Description", "");
+    const createBtn = button("Create circle", function () {
+      const name = (cn.value || "").trim();
+      if (!name) { toast("Add a circle name"); return; }
+      const id = safeId("circle");
+      const me = state.activeMemberId;
+      const newCircle = { id: id, name: name, description: (cd.value || "").trim(), createdAt: nowIso(), createdBy: me, moderators: [me], members: [me], people: [], posts: [] };
+      state.circles.push(newCircle);
+      state.activeCircleId = id;
+      saveState(state);
+      toast("Circle created");
+      render();
+    }, "primary");
+
+    right.appendChild(cn);
+    right.appendChild(cd);
+    right.appendChild(createBtn);
+
+    right.appendChild(divider());
+    right.appendChild(h2("Reset prototype data"));
+    right.appendChild(smallMuted("This clears localStorage for this prototype and restores sample data."));
+    right.appendChild(button("Reset", function () { localStorage.removeItem(storageKey); location.reload(); }, "default"));
+
+    layout.appendChild(left);
+    layout.appendChild(right);
+    app.appendChild(layout);
+  }
+
+  function buildModal(titleText, onClose) {
+    const overlay = el("div", {
+      position: "fixed",
+      left: "0",
+      top: "0",
+      right: "0",
+      bottom: "0",
+      background: "rgba(0,0,0,0.5)",
+      display: "none",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "18px",
+      zIndex: "9998"
+    });
+
+    const box = el("div", {
+      width: "100%",
+      maxWidth: "820px",
+      maxHeight: "85vh",
+      overflow: "auto",
+      background: "#ffffff",
+      borderRadius: "16px",
+      border: "1px solid rgba(0,0,0,0.10)",
+      boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+      padding: "14px"
+    });
+
+    const head = el("div", { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" });
+    const t = el("div", { fontSize: "16px", fontWeight: "900" });
+    t.textContent = titleText;
+    const closeBtn = button("Close", function () { api.close(); }, "default");
+    head.appendChild(t);
+    head.appendChild(closeBtn);
+
+    const content = el("div", {});
+    const footer = el("div", { marginTop: "12px", display: "flex", justifyContent: "flex-end", gap: "10px" });
+
+    box.appendChild(head);
+    box.appendChild(content);
+    box.appendChild(footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    function open() { overlay.style.display = "flex"; }
+    function close() {
+      overlay.style.display = "none";
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (typeof onClose === "function") onClose();
+    }
+
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) close(); });
+
+    const api = { open: open, close: close, content: content, footer: footer };
+    return api;
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

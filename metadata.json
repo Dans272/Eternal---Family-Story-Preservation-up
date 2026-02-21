@@ -1,0 +1,7 @@
+{
+  "name": "Eternal - Family Archive",
+  "description": "A sophisticated ancestry platform for preserving family history, media, and stories using GEDCOM imports and AI-enhanced summaries.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
